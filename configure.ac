@@ -43,6 +43,8 @@ EOF
 
 AX_CHECK_CFLAGS([-fms-extensions])
 
+CFLAGS+=" -D_GNU_SOURCE"
+
 # We will add this back for non-debug builds in the common.mk file
 CFLAGS=`echo ${CFLAGS} | sed 's/-O2//'`
 CXXFLAGS=`echo ${CXXFLAGS} | sed 's/-O2//'`
