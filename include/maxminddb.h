@@ -10,7 +10,7 @@
 #endif
 
 #if HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 #include <maxminddb_config.h>
 #include <netdb.h>

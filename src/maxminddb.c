@@ -1,18 +1,17 @@
+
+#if HAVE_CONFIG_H
+#include "config.h"
+#endif
+#include <string.h>
 #include "maxminddb.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#if HAVE_CONFIG_H
-#include <config.h>
-#endif
-
 #define MMDB_DATA_SECTION_SEPARATOR (16)
 
 #ifdef MMDB_DEBUG
