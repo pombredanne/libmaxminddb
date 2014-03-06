@@ -1,18 +1,28 @@
+#if HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #define _POSIX_C_SOURCE 200112L
 #include <assert.h>
-#include <libgen.h>
-#include <netdb.h>
 #include <stdarg.h>
-#include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
+
 #include "maxminddb.h"
 #include "maxminddb_test_helper.h"
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <libgen.h>
+#include <unistd.h>
+#endif
+
+#define NO_PROTO
 
 #ifndef strndup
 /* *INDENT-OFF* */
 /* Copied from the libiberty strndup.c, which is LPGPL 2+ */
-char *strndup (const char *s, size_t n)
+NO_PROTO char *strndup (const char *s, size_t n)
 {
   char *result;
   size_t len = strlen (s);
@@ -142,7 +152,10 @@ MMDB_lookup_result_s lookup_sockaddr_ok(MMDB_s *mmdb, const char *ip,
     struct addrinfo *addresses;
 
     if (ip[0] == ':') {
-        hints.ai_flags = ai_flags | AI_V4MAPPED;
+        hints.ai_flags = ai_flags;
+#ifdef AI_V4MAPPED
+        hints.ai_flags |= AI_V4MAPPED;
+#endif
         hints.ai_family = AF_INET6;
     } else {
         hints.ai_flags = ai_flags;
@@ -183,7 +196,7 @@ void test_lookup_errors(int gai_error, int mmdb_error,
                function, ip, file, mode_desc);
 
     if (!is_ok) {
-        diag("MMDB error - %d", mmdb_error);
+        diag("MMDB error - %s", MMDB_strerror(mmdb_error));
     }
 }
 
@@ -194,15 +207,21 @@ MMDB_entry_data_s data_ok(MMDB_lookup_result_s *result, uint32_t expect_type,
     va_start(keys, description);
 
     MMDB_entry_data_s data;
-    int error = MMDB_vget_value(&result->entry, &data, keys);
+    int status = MMDB_vget_value(&result->entry, &data, keys);
 
     va_end(keys);
 
-    ok(!error, "no error from call to MMDB_vget_value - %s", description);
-    int is_ok = ok(data.type == expect_type, "got the expected data type - %s",
-                   description);
-    if (!is_ok) {
-        diag("  data type value is %i but expected %i", data.type, expect_type);
+    if (cmp_ok(status, "==", MMDB_SUCCESS,
+               "no error from call to MMDB_vget_value - %s", description)) {
+
+        if (!ok(data.type == expect_type, "got the expected data type - %s",
+                description)) {
+
+            diag("  data type value is %i but expected %i", data.type,
+                 expect_type);
+        }
+    } else {
+        diag("  error from MMDB_vget_value - %s", MMDB_strerror(status));
     }
 
     return data;

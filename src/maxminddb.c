@@ -1,16 +1,21 @@
+#if HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include "maxminddb.h"
-#include <arpa/inet.h>
-#include <assert.h>
+#include "maxminddb-compat-util.h"
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-#if HAVE_CONFIG_H
-#include <config.h>
+#ifdef _WIN32
+#include <Windows.h>
+#include <Ws2ipdef.h>
+#else
+#include <arpa/inet.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #define MMDB_DATA_SECTION_SEPARATOR (16)
@@ -98,12 +103,12 @@ DEBUG_FUNC char *type_num_to_name(uint8_t num)
 }
 #endif
 
-typedef struct record_info {
+typedef struct record_info_s {
     uint16_t record_length;
     uint32_t (*left_record_getter)(const uint8_t *);
     uint32_t (*right_record_getter)(const uint8_t *);
     uint8_t right_record_offset;
-} record_info;
+} record_info_s;
 
 #define METADATA_MARKER "\xab\xcd\xefMaxMind.com"
 /* This is 128kb */
@@ -115,7 +120,7 @@ LOCAL const uint8_t *find_metadata(const uint8_t *file_content,
                                    ssize_t file_size, uint32_t *metadata_size);
 LOCAL int read_metadata(MMDB_s *mmdb);
 LOCAL MMDB_s make_fake_metadata_db(MMDB_s *mmdb);
-LOCAL uint32_t value_for_key_as_uint16(MMDB_entry_s *start, char *key);
+LOCAL uint16_t value_for_key_as_uint16(MMDB_entry_s *start, char *key);
 LOCAL uint32_t value_for_key_as_uint32(MMDB_entry_s *start, char *key);
 LOCAL uint64_t value_for_key_as_uint64(MMDB_entry_s *start, char *key);
 LOCAL char *value_for_key_as_string(MMDB_entry_s *start, char *key);
@@ -123,16 +128,19 @@ LOCAL int populate_languages_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
                                       MMDB_entry_s *metadata_start);
 LOCAL int populate_description_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
                                         MMDB_entry_s *metadata_start);
-LOCAL int resolve_any_address(const char *ipstr, bool is_ipv4,
-                              struct addrinfo **addresses);
+LOCAL int resolve_any_address(const char *ipstr, struct addrinfo **addresses);
 LOCAL int find_address_in_search_tree(MMDB_s *mmdb, uint8_t *address,
+                                      sa_family_t address_family,
                                       MMDB_lookup_result_s *result);
-LOCAL record_info record_info_for_database(MMDB_s *mmdb);
+LOCAL record_info_s record_info_for_database(MMDB_s *mmdb);
+LOCAL MMDB_ipv4_start_node_s find_ipv4_start_node(MMDB_s *mmdb);
+LOCAL int populate_result(MMDB_s *mmdb, uint32_t node_count, uint32_t value,
+                          uint16_t netmask, MMDB_lookup_result_s *result);
 LOCAL uint32_t get_left_28_bit_record(const uint8_t *record);
 LOCAL uint32_t get_right_28_bit_record(const uint8_t *record);
-LOCAL int lookup_path_in_array(char *path_elem, MMDB_s *mmdb,
+LOCAL int lookup_path_in_array(const char *path_elem, MMDB_s *mmdb,
                                MMDB_entry_data_s *entry_data);
-LOCAL int lookup_path_in_map(char *path_elem, MMDB_s *mmdb,
+LOCAL int lookup_path_in_map(const char *path_elem, MMDB_s *mmdb,
                              MMDB_entry_data_s *entry_data);
 LOCAL int skip_map_or_array(MMDB_s *mmdb, MMDB_entry_data_s *entry_data);
 LOCAL int decode_one_follow(MMDB_s *mmdb, uint32_t offset,
@@ -143,7 +151,7 @@ LOCAL int get_ext_type(int raw_ext_type);
 LOCAL uint32_t get_ptr_from(uint8_t ctrl, uint8_t const *const ptr,
                             int ptr_size);
 LOCAL int get_entry_data_list(MMDB_s *mmdb, uint32_t offset,
-                              MMDB_entry_data_list_s *entry_data_list);
+                              MMDB_entry_data_list_s *const entry_data_list);
 LOCAL float get_ieee754_float(const uint8_t *restrict p);
 LOCAL double get_ieee754_double(const uint8_t *restrict p);
 LOCAL uint32_t get_uint32(const uint8_t *p);
@@ -152,12 +160,11 @@ LOCAL uint32_t get_uint16(const uint8_t *p);
 LOCAL uint64_t get_uintX(const uint8_t *p, int length);
 LOCAL int32_t get_sintX(const uint8_t *p, int length);
 LOCAL MMDB_entry_data_list_s *new_entry_data_list(void);
-LOCAL void free_mmdb_struct(MMDB_s *mmdb);
+LOCAL void free_mmdb_struct(MMDB_s *const mmdb);
 LOCAL void free_languages_metadata(MMDB_s *mmdb);
 LOCAL void free_descriptions_metadata(MMDB_s *mmdb);
 LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
-    FILE *stream, MMDB_entry_data_list_s
-    *entry_data_list, int indent,
+    FILE *stream, MMDB_entry_data_list_s *entry_data_list, int indent,
     int *status);
 LOCAL void print_indentation(FILE *stream, int i);
 LOCAL char *bytes_to_hex(uint8_t *bytes, uint32_t size);
@@ -180,27 +187,7 @@ LOCAL char *bytes_to_hex(uint8_t *bytes, uint32_t size);
         }                                                         \
     } while (0)
 
-#if !defined HAVE_MEMMEM
-LOCAL void *memmem(const void *big, size_t big_len, const void *little,
-                   size_t little_len)
-{
-    if (little_len) {
-        int first_char = ((uint8_t *)little)[0];
-        const void *ptr = big;
-        size_t len = big_len;
-        while (len >= little_len
-               && (ptr = memchr(ptr, first_char, len - little_len + 1))) {
-            if (!memcmp(ptr, little, little_len)) {
-                return (void *)ptr;
-            }
-            len = big_len - (++ptr - big);
-        }
-    }
-    return NULL;
-}
-#endif
-
-int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)
+int MMDB_open(const char *const filename, uint32_t flags, MMDB_s *const mmdb)
 {
     mmdb->file_content = NULL;
     mmdb->data_section = NULL;
@@ -208,12 +195,22 @@ int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)
     mmdb->metadata.languages.count = 0;
     mmdb->metadata.description.count = 0;
 
-    mmdb->filename = strdup(filename);
+    mmdb->filename = mmdb_strdup(filename);
     if (NULL == mmdb->filename) {
         free_mmdb_struct(mmdb);
         return MMDB_OUT_OF_MEMORY_ERROR;
     }
 
+    ssize_t size;
+#ifdef _WIN32
+    HANDLE fd = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (fd == INVALID_HANDLE_VALUE) {
+        free_mmdb_struct(mmdb);
+        return MMDB_FILE_OPEN_ERROR;
+    }
+    size = GetFileSize(fd, NULL);
+#else
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         free_mmdb_struct(mmdb);
@@ -222,20 +219,33 @@ int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)
 
     struct stat s;
     fstat(fd, &s);
+    size = s.st_size;
+#endif
 
     if ((flags & MMDB_MODE_MASK) == 0) {
         flags |= MMDB_MODE_MMAP;
     }
     mmdb->flags = flags;
-    ssize_t size;
-    mmdb->file_size = size = s.st_size;
+    mmdb->file_size = size;
 
+#ifdef _WIN32
+    HANDLE mmh = CreateFileMappingA(fd, NULL, PAGE_READONLY, 0, size, filename);
+    uint8_t *file_content =
+        (uint8_t *)MapViewOfFile(mmh, FILE_MAP_READ, 0, 0, 0);
+    if (file_content == NULL) {
+        CloseHandle(mmh);
+        CloseHandle(fd);
+        free_mmdb_struct(mmdb);
+        return MMDB_IO_ERROR;
+    }
+#else
     uint8_t *file_content =
         (uint8_t *)mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
     if (MAP_FAILED == file_content) {
         free_mmdb_struct(mmdb);
         return MMDB_IO_ERROR;
     }
+#endif
 
     uint32_t metadata_size = 0;
     const uint8_t *metadata = find_metadata(file_content, size, &metadata_size);
@@ -257,7 +267,13 @@ int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)
         return MMDB_UNKNOWN_DATABASE_FORMAT_ERROR;
     }
 
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    CloseHandle(fd);
+#else
     close(fd);
+#endif
 
     uint32_t search_tree_size = mmdb->metadata.node_count *
                                 mmdb->full_record_byte_size;
@@ -266,6 +282,8 @@ int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)
     mmdb->data_section = file_content + search_tree_size;
     mmdb->data_section_size = mmdb->file_size - search_tree_size;
     mmdb->metadata_section = metadata;
+    mmdb->ipv4_start_node.node_value = 0;
+    mmdb->ipv4_start_node.netmask = 0;
 
     return MMDB_SUCCESS;
 }
@@ -280,8 +298,8 @@ LOCAL const uint8_t *find_metadata(const uint8_t *file_content,
     uint8_t *search_area = (uint8_t *)(file_content + (file_size - max_size));
     uint8_t *tmp = search_area;
     do {
-        tmp = memmem(search_area, max_size,
-                     METADATA_MARKER, strlen(METADATA_MARKER));
+        tmp = mmdb_memmem(search_area, max_size,
+                          METADATA_MARKER, strlen(METADATA_MARKER));
 
         if (NULL != tmp) {
             max_size -= tmp - search_area;
@@ -396,10 +414,10 @@ LOCAL MMDB_s make_fake_metadata_db(MMDB_s *mmdb)
     return fake_metadata_db;
 }
 
-LOCAL uint32_t value_for_key_as_uint16(MMDB_entry_s *start, char *key)
+LOCAL uint16_t value_for_key_as_uint16(MMDB_entry_s *start, char *key)
 {
     MMDB_entry_data_s entry_data;
-    char *path[] = { key, NULL };
+    const char *path[] = { key, NULL };
     MMDB_aget_value(start, &entry_data, path);
     return entry_data.uint16;
 }
@@ -407,7 +425,7 @@ LOCAL uint32_t value_for_key_as_uint16(MMDB_entry_s *start, char *key)
 LOCAL uint32_t value_for_key_as_uint32(MMDB_entry_s *start, char *key)
 {
     MMDB_entry_data_s entry_data;
-    char *path[] = { key, NULL };
+    const char *path[] = { key, NULL };
     MMDB_aget_value(start, &entry_data, path);
     return entry_data.uint32;
 }
@@ -415,7 +433,7 @@ LOCAL uint32_t value_for_key_as_uint32(MMDB_entry_s *start, char *key)
 LOCAL uint64_t value_for_key_as_uint64(MMDB_entry_s *start, char *key)
 {
     MMDB_entry_data_s entry_data;
-    char *path[] = { key, NULL };
+    const char *path[] = { key, NULL };
     MMDB_aget_value(start, &entry_data, path);
     return entry_data.uint64;
 }
@@ -423,9 +441,9 @@ LOCAL uint64_t value_for_key_as_uint64(MMDB_entry_s *start, char *key)
 LOCAL char *value_for_key_as_string(MMDB_entry_s *start, char *key)
 {
     MMDB_entry_data_s entry_data;
-    char *path[] = { key, NULL };
+    const char *path[] = { key, NULL };
     MMDB_aget_value(start, &entry_data, path);
-    return strndup((char *)entry_data.utf8_string, entry_data.data_size);
+    return mmdb_strndup((char *)entry_data.utf8_string, entry_data.data_size);
 }
 
 LOCAL int populate_languages_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
@@ -433,16 +451,17 @@ LOCAL int populate_languages_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
 {
     MMDB_entry_data_s entry_data;
 
-    char *path[] = { "languages", NULL };
+    const char *path[] = { "languages", NULL };
     MMDB_aget_value(metadata_start, &entry_data, path);
 
     if (MMDB_DATA_TYPE_ARRAY != entry_data.type) {
         return MMDB_INVALID_METADATA_ERROR;
     }
 
-    MMDB_entry_s array_start;
-    array_start.mmdb = metadata_db;
-    array_start.offset = entry_data.offset;
+    MMDB_entry_s array_start = {
+        .mmdb   = metadata_db,
+        .offset = entry_data.offset
+    };
 
     MMDB_entry_data_list_s *member;
     MMDB_get_entry_data_list(&array_start, &member);
@@ -463,8 +482,8 @@ LOCAL int populate_languages_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
         }
 
         mmdb->metadata.languages.names[i] =
-            strndup((char *)member->entry_data.utf8_string,
-                    member->entry_data.data_size);
+            mmdb_strndup((char *)member->entry_data.utf8_string,
+                         member->entry_data.data_size);
 
         if (NULL == mmdb->metadata.languages.names[i]) {
             return MMDB_OUT_OF_MEMORY_ERROR;
@@ -484,16 +503,17 @@ LOCAL int populate_description_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
 {
     MMDB_entry_data_s entry_data;
 
-    char *path[] = { "description", NULL };
+    const char *path[] = { "description", NULL };
     MMDB_aget_value(metadata_start, &entry_data, path);
 
     if (MMDB_DATA_TYPE_MAP != entry_data.type) {
         return MMDB_INVALID_METADATA_ERROR;
     }
 
-    MMDB_entry_s map_start;
-    map_start.mmdb = metadata_db;
-    map_start.offset = entry_data.offset;
+    MMDB_entry_s map_start = {
+        .mmdb   = metadata_db,
+        .offset = entry_data.offset
+    };
 
     MMDB_entry_data_list_s *member;
     MMDB_get_entry_data_list(&map_start, &member);
@@ -526,8 +546,8 @@ LOCAL int populate_description_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
         }
 
         mmdb->metadata.description.descriptions[i]->language =
-            strndup((char *)member->entry_data.utf8_string,
-                    member->entry_data.data_size);
+            mmdb_strndup((char *)member->entry_data.utf8_string,
+                         member->entry_data.data_size);
 
         if (NULL == mmdb->metadata.description.descriptions[i]->language) {
             return MMDB_OUT_OF_MEMORY_ERROR;
@@ -540,8 +560,8 @@ LOCAL int populate_description_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
         }
 
         mmdb->metadata.description.descriptions[i]->description =
-            strndup((char *)member->entry_data.utf8_string,
-                    member->entry_data.data_size);
+            mmdb_strndup((char *)member->entry_data.utf8_string,
+                         member->entry_data.data_size);
 
         if (NULL == mmdb->metadata.description.descriptions[i]->description) {
             return MMDB_OUT_OF_MEMORY_ERROR;
@@ -553,11 +573,11 @@ LOCAL int populate_description_metadata(MMDB_s *mmdb, MMDB_s *metadata_db,
     return MMDB_SUCCESS;
 }
 
-MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *mmdb, const char *ipstr,
-                                        int *gai_error, int *mmdb_error)
+MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *const mmdb,
+                                        const char *const ipstr,
+                                        int *const gai_error,
+                                        int *const mmdb_error)
 {
-    bool is_ipv4 = mmdb->metadata.ip_version == 4 ? true : false;
-
     MMDB_lookup_result_s result = {
         .found_entry = false,
         .netmask     = 0,
@@ -568,9 +588,17 @@ MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *mmdb, const char *ipstr,
     };
 
     struct addrinfo *addresses;
-    *gai_error = resolve_any_address(ipstr, is_ipv4, &addresses);
+    *gai_error = resolve_any_address(ipstr, &addresses);
 
     if (*gai_error) {
+        return result;
+    }
+
+    if (mmdb->metadata.ip_version == 4
+        && addresses->ai_addr->sa_family == AF_INET6) {
+
+        *mmdb_error = MMDB_IPV6_LOOKUP_IN_IPV4_DATABASE_ERROR;
+        freeaddrinfo(addresses);
         return result;
     }
 
@@ -581,20 +609,22 @@ MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *mmdb, const char *ipstr,
     return result;
 }
 
-LOCAL int resolve_any_address(const char *ipstr, bool is_ipv4,
-                              struct addrinfo **addresses)
+LOCAL int resolve_any_address(const char *ipstr, struct addrinfo **addresses)
 {
     struct addrinfo hints = {
         .ai_socktype = SOCK_STREAM
     };
     int gai_status;
 
-    if (is_ipv4) {
+    if (NULL != strchr(ipstr, ':')) {
+        hints.ai_flags = AI_NUMERICHOST;
+#ifdef AI_V4MAPPED
+        hints.ai_flags |= AI_V4MAPPED;
+#endif
+        hints.ai_family = AF_INET6;
+    } else {
         hints.ai_flags = AI_NUMERICHOST;
         hints.ai_family = AF_INET;
-    } else {
-        hints.ai_flags = AI_NUMERICHOST | AI_V4MAPPED;
-        hints.ai_family = AF_INET6;
     }
 
     gai_status = getaddrinfo(ipstr, NULL, &hints, addresses);
@@ -605,9 +635,10 @@ LOCAL int resolve_any_address(const char *ipstr, bool is_ipv4,
     return 0;
 }
 
-MMDB_lookup_result_s MMDB_lookup_sockaddr(MMDB_s *mmdb,
-                                          struct sockaddr *sockaddr,
-                                          int *mmdb_error)
+MMDB_lookup_result_s MMDB_lookup_sockaddr(
+    MMDB_s *const mmdb,
+    const struct sockaddr *const sockaddr,
+    int *const mmdb_error)
 {
     MMDB_lookup_result_s result = {
         .found_entry = false,
@@ -618,35 +649,37 @@ MMDB_lookup_result_s MMDB_lookup_sockaddr(MMDB_s *mmdb,
         }
     };
 
-    uint8_t *address;
+    uint8_t mapped_address[16], *address;
     if (mmdb->metadata.ip_version == 4) {
         if (sockaddr->sa_family == AF_INET6) {
             return result;
         }
-        address = malloc(4);
-        memcpy(address, &((struct sockaddr_in *)sockaddr)->sin_addr.s_addr, 4);
+        address = (uint8_t *)&((struct sockaddr_in *)sockaddr)->sin_addr.s_addr;
     } else {
-        // We need calloc() here for the IPv4 case - the first 12 bytes must be 0
-        address = calloc(1, 16);
         if (sockaddr->sa_family == AF_INET6) {
-            memcpy(address,
-                   ((struct sockaddr_in6 *)sockaddr)->sin6_addr.s6_addr, 16);
+            address =
+                (uint8_t *)&((struct sockaddr_in6 *)sockaddr)->sin6_addr.
+                s6_addr;
         } else {
+            address = mapped_address;
+            memset(address, 0, 12);
             memcpy(address + 12,
                    &((struct sockaddr_in *)sockaddr)->sin_addr.s_addr, 4);
         }
     }
 
-    *mmdb_error = find_address_in_search_tree(mmdb, address, &result);
-    free(address);
+    *mmdb_error =
+        find_address_in_search_tree(mmdb, address, sockaddr->sa_family,
+                                    &result);
 
     return result;
 }
 
 LOCAL int find_address_in_search_tree(MMDB_s *mmdb, uint8_t *address,
+                                      sa_family_t address_family,
                                       MMDB_lookup_result_s *result)
 {
-    record_info record_info = record_info_for_database(mmdb);
+    record_info_s record_info = record_info_for_database(mmdb);
     if (0 == record_info.right_record_offset) {
         return MMDB_UNKNOWN_DATABASE_FORMAT_ERROR;
     }
@@ -656,14 +689,33 @@ LOCAL int find_address_in_search_tree(MMDB_s *mmdb, uint8_t *address,
 
     uint32_t node_count = mmdb->metadata.node_count;
     uint32_t value = 0;
-    const uint8_t *search_tree = mmdb->file_content;
     uint16_t max_depth0 = mmdb->depth - 1;
-    const uint8_t *record_pointer;
-    for (int current_bit = max_depth0; current_bit >= 0; current_bit--) {
-        uint8_t bit_is_true = address[(max_depth0 - current_bit) >> 3] &
-                              (1U << (~(max_depth0 - current_bit) & 7)) ? 1 : 0;
+    uint16_t start_bit = max_depth0;
 
-        DEBUG_MSGF("Looking at bit %i - value is %i", current_bit, bit_is_true);
+    if (mmdb->metadata.ip_version == 6 && address_family == AF_INET) {
+        MMDB_ipv4_start_node_s ipv4_start_node = find_ipv4_start_node(mmdb);
+        DEBUG_MSGF("IPv4 start node is %u (netmask %u)",
+                   ipv4_start_node.node_value, ipv4_start_node.netmask);
+        /* We have an IPv6 database with no IPv4 data */
+        if (ipv4_start_node.node_value >= node_count) {
+            return populate_result(mmdb, node_count, ipv4_start_node.node_value,
+                                   ipv4_start_node.netmask, result);
+        }
+
+        value = ipv4_start_node.node_value;
+        start_bit -= ipv4_start_node.netmask;
+    }
+
+    const uint8_t *search_tree = mmdb->file_content;
+    const uint8_t *record_pointer;
+    for (int current_bit = start_bit; current_bit >= 0; current_bit--) {
+        uint8_t bit_is_true =
+            address[(max_depth0 - current_bit) >> 3]
+            & (1U << (~(max_depth0 - current_bit) & 7)) ? 1 : 0;
+
+        DEBUG_MSGF("Looking at bit %i - bit's value is %i", current_bit,
+                   bit_is_true);
+        DEBUG_MSGF("  current node = %u", value);
 
         record_pointer = &search_tree[value * record_info.record_length];
         if (bit_is_true) {
@@ -677,35 +729,28 @@ LOCAL int find_address_in_search_tree(MMDB_s *mmdb, uint8_t *address,
          * previously seen value, but that's more complicated. For now, we can
          * at least check that we don't end up at the top of the tree again. */
         if (0 == value) {
+            DEBUG_MSGF("  %s record has a value of 0",
+                       bit_is_true ? "right" : "left");
             return MMDB_CORRUPT_SEARCH_TREE_ERROR;
         }
 
         if (value >= node_count) {
-            uint32_t offset = value - node_count;
-            DEBUG_MSGF("  data section offset is %i (record value = %i)",
-                       offset,
-                       value);
-
-            if (offset > mmdb->data_section_size) {
-                return MMDB_CORRUPT_SEARCH_TREE_ERROR;
-            }
-
-            result->netmask = mmdb->depth - current_bit;
-            result->entry.offset = offset;
-            result->found_entry = result->entry.offset > 0 ? true : false;
-            return MMDB_SUCCESS;
+            return populate_result(mmdb, node_count, value, current_bit, result);
         } else {
             DEBUG_MSGF("  proceeding to search tree node %i", value);
         }
     }
 
+    DEBUG_MSG(
+        "Reached the end of the address bits without leaving the search tree");
+
     // We should not be able to reach this return. If we do, something very bad happened.
     return MMDB_CORRUPT_SEARCH_TREE_ERROR;
 }
 
-LOCAL record_info record_info_for_database(MMDB_s *mmdb)
+LOCAL record_info_s record_info_for_database(MMDB_s *mmdb)
 {
-    record_info record_info = {
+    record_info_s record_info = {
         .record_length       = mmdb->full_record_byte_size,
         .right_record_offset = 0
     };
@@ -727,6 +772,53 @@ LOCAL record_info record_info_for_database(MMDB_s *mmdb)
     return record_info;
 }
 
+LOCAL MMDB_ipv4_start_node_s find_ipv4_start_node(MMDB_s *mmdb)
+{
+    /* In a pathological case of a database with a single node search tree,
+     * this check will be true even after we've found the IPv4 start node, but
+     * that doesn't seem worth trying to fix. */
+    if (mmdb->ipv4_start_node.node_value != 0) {
+        return mmdb->ipv4_start_node;
+    }
+
+    record_info_s record_info = record_info_for_database(mmdb);
+
+    const uint8_t *search_tree = mmdb->file_content;
+    uint32_t node_value = 0;
+    const uint8_t *record_pointer;
+    uint32_t netmask;
+    for (netmask = 0; netmask < 96; netmask++) {
+        record_pointer = &search_tree[node_value * record_info.record_length];
+        node_value = record_info.left_record_getter(record_pointer);
+        /* This can happen if there's no IPv4 data _or_ if there is a subnet
+         * with data that contains the entire IPv4 range (like ::/64) */
+        if (node_value >= mmdb->metadata.node_count) {
+            break;
+        }
+    }
+
+    mmdb->ipv4_start_node.node_value = node_value;
+    mmdb->ipv4_start_node.netmask = netmask;
+
+    return mmdb->ipv4_start_node;
+}
+
+LOCAL int populate_result(MMDB_s *mmdb, uint32_t node_count, uint32_t value,
+                          uint16_t netmask, MMDB_lookup_result_s *result)
+{
+    uint32_t offset = value - node_count;
+    DEBUG_MSGF("  data section offset is %i (record value = %i)", offset, value);
+
+    if (offset > mmdb->data_section_size) {
+        return MMDB_CORRUPT_SEARCH_TREE_ERROR;
+    }
+
+    result->netmask = mmdb->depth - netmask;
+    result->entry.offset = offset;
+    result->found_entry = result->entry.offset > 0 ? true : false;
+    return MMDB_SUCCESS;
+}
+
 LOCAL uint32_t get_left_28_bit_record(const uint8_t *record)
 {
     return record[0] * 65536 + record[1] * 256 + record[2] +
@@ -739,9 +831,10 @@ LOCAL uint32_t get_right_28_bit_record(const uint8_t *record)
     return value & 0xfffffff;
 }
 
-int MMDB_read_node(MMDB_s *mmdb, uint32_t node_number, MMDB_search_node_s *node)
+int MMDB_read_node(MMDB_s *const mmdb, uint32_t node_number,
+                   MMDB_search_node_s *const node)
 {
-    record_info record_info = record_info_for_database(mmdb);
+    record_info_s record_info = record_info_for_database(mmdb);
     if (0 == record_info.right_record_offset) {
         return MMDB_UNKNOWN_DATABASE_FORMAT_ERROR;
     }
@@ -760,7 +853,9 @@ int MMDB_read_node(MMDB_s *mmdb, uint32_t node_number, MMDB_search_node_s *node)
     return MMDB_SUCCESS;
 }
 
-int MMDB_get_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, ...)
+int MMDB_get_value(MMDB_entry_s *const start,
+                   MMDB_entry_data_s *const entry_data,
+                   ...)
 {
     va_list path;
     va_start(path, entry_data);
@@ -769,20 +864,21 @@ int MMDB_get_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, ...)
     return status;
 }
 
-int MMDB_vget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
+int MMDB_vget_value(MMDB_entry_s *const start,
+                    MMDB_entry_data_s *const entry_data,
                     va_list va_path)
 {
-    char **path = NULL;
+    const char **path = NULL;
 
     int i = 0;
-    char *path_elem;
+    const char *path_elem;
     while (NULL != (path_elem = va_arg(va_path, char *))) {
-        path = realloc(path, sizeof(char *) * (i + 1));
+        path = realloc(path, sizeof(const char *) * (i + 1));
         if (NULL == path) {
             return MMDB_OUT_OF_MEMORY_ERROR;
         }
 
-        path[i] = strdup(path_elem);
+        path[i] = mmdb_strdup(path_elem);
         if (NULL == path[i]) {
             return MMDB_OUT_OF_MEMORY_ERROR;
         }
@@ -798,17 +894,18 @@ int MMDB_vget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
     int status = MMDB_aget_value(start, entry_data, path);
 
     i = 0;
-    char *elem;
-    while (NULL != (elem = path[i++])) {
-        free(elem);
+    while (NULL != path[i]) {
+        free((void *)path[i]);
+        i++;
     }
     free(path);
 
     return status;
 }
 
-int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
-                    char **path)
+int MMDB_aget_value(MMDB_entry_s *const start,
+                    MMDB_entry_data_s *const entry_data,
+                    const char *const *const path)
 {
     MMDB_s *mmdb = start->mmdb;
     uint32_t offset = start->offset;
@@ -818,6 +915,10 @@ int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
     DEBUG_MSG("looking up value by path");
 
     CHECKED_DECODE_ONE_FOLLOW(mmdb, offset, entry_data);
+
+    DEBUG_NL;
+    DEBUG_MSGF("top level element is a %s", type_num_to_name(entry_data->type));
+
     /* Can this happen? It'd probably represent a pathological case under
      * normal use, but there's nothing preventing someone from passing an
      * invalid MMDB_entry_s struct to this function */
@@ -825,8 +926,9 @@ int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
         return MMDB_INVALID_LOOKUP_PATH_ERROR;
     }
 
-    char *path_elem;
-    while (NULL != (path_elem = *(path++))) {
+    const char *path_elem;
+    int i = 0;
+    while (NULL != (path_elem = path[i++])) {
         DEBUG_NL;
         DEBUG_MSGF("path elem = %s", path_elem);
 
@@ -838,22 +940,27 @@ int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data,
         if (entry_data->type == MMDB_DATA_TYPE_ARRAY) {
             int status = lookup_path_in_array(path_elem, mmdb, entry_data);
             if (MMDB_SUCCESS != status) {
+                memset(entry_data, 0, sizeof(MMDB_entry_data_s));
                 return status;
             }
         } else if (entry_data->type == MMDB_DATA_TYPE_MAP) {
             int status = lookup_path_in_map(path_elem, mmdb, entry_data);
             if (MMDB_SUCCESS != status) {
+                memset(entry_data, 0, sizeof(MMDB_entry_data_s));
                 return status;
             }
         } else {
-            return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA;
+            /* Once we make the code traverse maps & arrays without calling
+             * decode_one() we can get rid of this. */
+            memset(entry_data, 0, sizeof(MMDB_entry_data_s));
+            return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR;
         }
     }
 
     return MMDB_SUCCESS;
 }
 
-LOCAL int lookup_path_in_array(char *path_elem, MMDB_s *mmdb,
+LOCAL int lookup_path_in_array(const char *path_elem, MMDB_s *mmdb,
                                MMDB_entry_data_s *entry_data)
 {
     uint32_t size = entry_data->data_size;
@@ -863,12 +970,14 @@ LOCAL int lookup_path_in_array(char *path_elem, MMDB_s *mmdb,
     }
 
     if ((uint32_t)array_index >= size) {
-        entry_data->offset = 0;
-        return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA;
+        memset(entry_data, 0, sizeof(MMDB_entry_data_s));
+        return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR;
     }
 
     for (int i = 0; i < array_index; i++) {
-        CHECKED_DECODE_ONE_FOLLOW(mmdb, entry_data->offset_to_next, entry_data);
+        /* We don't want to follow a pointer here. If the next element is a
+         * pointer we simply skip it and keep going */
+        CHECKED_DECODE_ONE(mmdb, entry_data->offset_to_next, entry_data);
         int status = skip_map_or_array(mmdb, entry_data);
         if (MMDB_SUCCESS != status) {
             return status;
@@ -882,7 +991,7 @@ LOCAL int lookup_path_in_array(char *path_elem, MMDB_s *mmdb,
     return MMDB_SUCCESS;
 }
 
-LOCAL int lookup_path_in_map(char *path_elem, MMDB_s *mmdb,
+LOCAL int lookup_path_in_map(const char *path_elem, MMDB_s *mmdb,
                              MMDB_entry_data_s *entry_data)
 {
     uint32_t size = entry_data->data_size;
@@ -908,7 +1017,9 @@ LOCAL int lookup_path_in_map(char *path_elem, MMDB_s *mmdb,
             memcpy(entry_data, &value, sizeof(MMDB_entry_data_s));
             return MMDB_SUCCESS;
         } else {
-            CHECKED_DECODE_ONE_FOLLOW(mmdb, offset_to_value, &value);
+            /* We don't want to follow a pointer here. If the next element is
+             * a pointer we simply skip it and keep going */
+            CHECKED_DECODE_ONE(mmdb, offset_to_value, &value);
             int status = skip_map_or_array(mmdb, &value);
             if (MMDB_SUCCESS != status) {
                 return status;
@@ -917,8 +1028,8 @@ LOCAL int lookup_path_in_map(char *path_elem, MMDB_s *mmdb,
         }
     }
 
-    entry_data->offset = 0;
-    return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA;
+    memset(entry_data, 0, sizeof(MMDB_entry_data_s));
+    return MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR;
 }
 
 LOCAL int skip_map_or_array(MMDB_s *mmdb, MMDB_entry_data_s *entry_data)
@@ -928,14 +1039,19 @@ LOCAL int skip_map_or_array(MMDB_s *mmdb, MMDB_entry_data_s *entry_data)
         while (size-- > 0) {
             CHECKED_DECODE_ONE(mmdb, entry_data->offset_to_next, entry_data);   // key
             CHECKED_DECODE_ONE(mmdb, entry_data->offset_to_next, entry_data);   // value
-            skip_map_or_array(mmdb, entry_data);
+            int status = skip_map_or_array(mmdb, entry_data);
+            if (MMDB_SUCCESS != status) {
+                return status;
+            }
         }
-
     } else if (entry_data->type == MMDB_DATA_TYPE_ARRAY) {
         uint32_t size = entry_data->data_size;
         while (size-- > 0) {
             CHECKED_DECODE_ONE(mmdb, entry_data->offset_to_next, entry_data);   // value
-            skip_map_or_array(mmdb, entry_data);
+            int status = skip_map_or_array(mmdb, entry_data);
+            if (MMDB_SUCCESS != status) {
+                return status;
+            }
         }
     }
 
@@ -948,11 +1064,18 @@ LOCAL int decode_one_follow(MMDB_s *mmdb, uint32_t offset,
     CHECKED_DECODE_ONE(mmdb, offset, entry_data);
     if (entry_data->type == MMDB_DATA_TYPE_POINTER) {
         /* The pointer could point to any part of the data section but the
-         * next entry for this particular offset is the one after the pointer,
-         * not the one after whatever the pointer points to. */
+         * next entry for this particular offset may be the one after the
+         * pointer, not the one after whatever the pointer points to. This
+         * depends on whether the pointer points to something that is a simple
+         * value or a compound value. For a compound value, the next one is
+         * the one after the pointer result, not the one after the pointer. */
         uint32_t next = entry_data->offset_to_next;
         CHECKED_DECODE_ONE(mmdb, entry_data->pointer, entry_data);
-        entry_data->offset_to_next = next;
+        if (entry_data->type != MMDB_DATA_TYPE_MAP
+            && entry_data->type != MMDB_DATA_TYPE_ARRAY) {
+
+            entry_data->offset_to_next = next;
+        }
     }
 
     return MMDB_SUCCESS;
@@ -1038,6 +1161,7 @@ LOCAL int decode_one(MMDB_s *mmdb, uint32_t offset,
         entry_data->boolean = size ? true : false;
         entry_data->data_size = 0;
         entry_data->offset_to_next = offset;
+        DEBUG_MSGF("boolean value: %s", entry_data->boolean ? "true" : "false");
         return MMDB_SUCCESS;
     }
 
@@ -1046,21 +1170,25 @@ LOCAL int decode_one(MMDB_s *mmdb, uint32_t offset,
             return MMDB_INVALID_DATA_ERROR;
         }
         entry_data->uint16 = (uint16_t)get_uintX(&mem[offset], size);
+        DEBUG_MSGF("uint16 value: %u", entry_data->uint16);
     } else if (type == MMDB_DATA_TYPE_UINT32) {
         if (size > 4) {
             return MMDB_INVALID_DATA_ERROR;
         }
         entry_data->uint32 = (uint32_t)get_uintX(&mem[offset], size);
+        DEBUG_MSGF("uint32 value: %u", entry_data->uint32);
     } else if (type == MMDB_DATA_TYPE_INT32) {
         if (size > 4) {
             return MMDB_INVALID_DATA_ERROR;
         }
         entry_data->int32 = get_sintX(&mem[offset], size);
+        DEBUG_MSGF("int32 value: %i", entry_data->int32);
     } else if (type == MMDB_DATA_TYPE_UINT64) {
         if (size > 8) {
             return MMDB_INVALID_DATA_ERROR;
         }
         entry_data->uint64 = get_uintX(&mem[offset], size);
+        DEBUG_MSGF("uint64 value: %" PRIu64, entry_data->uint64);
     } else if (type == MMDB_DATA_TYPE_UINT128) {
         if (size > 16) {
             return MMDB_INVALID_DATA_ERROR;
@@ -1079,21 +1207,24 @@ LOCAL int decode_one(MMDB_s *mmdb, uint32_t offset,
         }
         size = 4;
         entry_data->float_value = get_ieee754_float(&mem[offset]);
+        DEBUG_MSGF("float value: %f", entry_data->float_value);
     } else if (type == MMDB_DATA_TYPE_DOUBLE) {
         if (size != 8) {
             return MMDB_INVALID_DATA_ERROR;
         }
         size = 8;
         entry_data->double_value = get_ieee754_double(&mem[offset]);
+        DEBUG_MSGF("double value: %f", entry_data->double_value);
     } else if (type == MMDB_DATA_TYPE_UTF8_STRING) {
         entry_data->utf8_string = size == 0 ? "" : (char *)&mem[offset];
         entry_data->data_size = size;
 #ifdef MMDB_DEBUG
-        char *string = strndup(entry_data->utf8_string, size > 50 ? 50 : size);
+        char *string = mmdb_strndup(entry_data->utf8_string,
+                                    size > 50 ? 50 : size);
         if (NULL == string) {
             abort();
         }
-        DEBUG_MSGF("String value: %s", string);
+        DEBUG_MSGF("string value: %s", string);
         free(string);
 #endif
     } else if (type == MMDB_DATA_TYPE_BYTES) {
@@ -1134,7 +1265,7 @@ LOCAL uint32_t get_ptr_from(uint8_t ctrl, uint8_t const *const ptr,
 }
 
 int MMDB_get_metadata_as_entry_data_list(
-    MMDB_s *mmdb, MMDB_entry_data_list_s **entry_data_list)
+    MMDB_s *const mmdb, MMDB_entry_data_list_s **const entry_data_list)
 {
     MMDB_s metadata_db = make_fake_metadata_db(mmdb);
 
@@ -1146,8 +1277,8 @@ int MMDB_get_metadata_as_entry_data_list(
     return MMDB_get_entry_data_list(&metadata_start, entry_data_list);
 }
 
-int MMDB_get_entry_data_list(MMDB_entry_s *start,
-                             MMDB_entry_data_list_s **entry_data_list)
+int MMDB_get_entry_data_list(
+    MMDB_entry_s *start, MMDB_entry_data_list_s **const entry_data_list)
 {
     *entry_data_list = new_entry_data_list();
     if (NULL == entry_data_list) {
@@ -1157,7 +1288,7 @@ int MMDB_get_entry_data_list(MMDB_entry_s *start,
 }
 
 LOCAL int get_entry_data_list(MMDB_s *mmdb, uint32_t offset,
-                              MMDB_entry_data_list_s *entry_data_list)
+                              MMDB_entry_data_list_s *const entry_data_list)
 {
     CHECKED_DECODE_ONE(mmdb, offset, &entry_data_list->entry_data);
 
@@ -1335,7 +1466,7 @@ LOCAL MMDB_entry_data_list_s *new_entry_data_list(void)
     return calloc(1, sizeof(MMDB_entry_data_list_s));
 }
 
-void MMDB_free_entry_data_list(MMDB_entry_data_list_s *entry_data_list)
+void MMDB_free_entry_data_list(MMDB_entry_data_list_s *const entry_data_list)
 {
     if (entry_data_list == NULL) {
         return;
@@ -1346,12 +1477,12 @@ void MMDB_free_entry_data_list(MMDB_entry_data_list_s *entry_data_list)
     free(entry_data_list);
 }
 
-void MMDB_close(MMDB_s *mmdb)
+void MMDB_close(MMDB_s *const mmdb)
 {
     free_mmdb_struct(mmdb);
 }
 
-LOCAL void free_mmdb_struct(MMDB_s *mmdb)
+LOCAL void free_mmdb_struct(MMDB_s *const mmdb)
 {
     if (!mmdb) {
         return;
@@ -1361,7 +1492,14 @@ LOCAL void free_mmdb_struct(MMDB_s *mmdb)
         free((void *)mmdb->filename);
     }
     if (NULL != mmdb->file_content) {
+#ifdef _WIN32
+        UnmapViewOfFile(mmdb->file_content);
+        /* Winsock is only initialized if open was successful so we only have
+         * to cleanup then. */
+        WSACleanup();
+#else
         munmap((void *)mmdb->file_content, mmdb->file_size);
+#endif
     }
 
     if (NULL != mmdb->metadata.database_type) {
@@ -1392,8 +1530,10 @@ LOCAL void free_descriptions_metadata(MMDB_s *mmdb)
 
     for (size_t i = 0; i < mmdb->metadata.description.count; i++) {
         if (NULL != mmdb->metadata.description.descriptions[i]) {
-            if (NULL != mmdb->metadata.description.descriptions[i]->language) {
-                free((char *)mmdb->metadata.description.descriptions[i]->
+            if (NULL !=
+                mmdb->metadata.description.descriptions[i]->language) {
+                free((char *)mmdb->metadata.description.descriptions[i]
+                     ->
                      language);
             }
 
@@ -1414,8 +1554,8 @@ const char *MMDB_lib_version(void)
     return PACKAGE_VERSION;
 }
 
-int MMDB_dump_entry_data_list(FILE *stream,
-                              MMDB_entry_data_list_s *entry_data_list,
+int MMDB_dump_entry_data_list(FILE *const stream,
+                              MMDB_entry_data_list_s *const entry_data_list,
                               int indent)
 {
     int status;
@@ -1424,8 +1564,7 @@ int MMDB_dump_entry_data_list(FILE *stream,
 }
 
 LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
-    FILE *stream, MMDB_entry_data_list_s
-    *entry_data_list, int indent,
+    FILE *stream, MMDB_entry_data_list_s *entry_data_list, int indent,
     int *status)
 {
     switch (entry_data_list->entry_data.type) {
@@ -1441,8 +1580,9 @@ LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
                  size && entry_data_list; size--) {
 
                 char *key =
-                    strndup((char *)entry_data_list->entry_data.utf8_string,
-                            entry_data_list->entry_data.data_size);
+                    mmdb_strndup(
+                        (char *)entry_data_list->entry_data.utf8_string,
+                        entry_data_list->entry_data.data_size);
                 if (NULL == key) {
                     *status = MMDB_OUT_OF_MEMORY_ERROR;
                     return NULL;
@@ -1493,8 +1633,8 @@ LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
     case MMDB_DATA_TYPE_UTF8_STRING:
         {
             char *string =
-                strndup((char *)entry_data_list->entry_data.utf8_string,
-                        entry_data_list->entry_data.data_size);
+                mmdb_strndup((char *)entry_data_list->entry_data.utf8_string,
+                             entry_data_list->entry_data.data_size);
             if (NULL == string) {
                 *status = MMDB_OUT_OF_MEMORY_ERROR;
                 return NULL;
@@ -1552,7 +1692,8 @@ LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
         break;
     case MMDB_DATA_TYPE_UINT64:
         print_indentation(stream, indent);
-        fprintf(stream, "%lu <uint64>\n", entry_data_list->entry_data.uint64);
+        fprintf(stream, "%" PRIu64 " <uint64>\n",
+                entry_data_list->entry_data.uint64);
         entry_data_list = entry_data_list->next;
         break;
     case MMDB_DATA_TYPE_UINT128:
@@ -1565,7 +1706,8 @@ LOCAL MMDB_entry_data_list_s *dump_entry_data_list(
 #else
         uint64_t high = entry_data_list->entry_data.uint128 >> 64;
         uint64_t low = (uint64_t)entry_data_list->entry_data.uint128;
-        fprintf(stream, "0x%016" PRIX64 "%016" PRIX64 " <uint128>\n", high, low);
+        fprintf(stream, "0x%016" PRIX64 "%016" PRIX64 " <uint128>\n", high,
+                low);
 #endif
         entry_data_list = entry_data_list->next;
         break;
@@ -1628,12 +1770,15 @@ const char *MMDB_strerror(int error_code)
     case MMDB_INVALID_LOOKUP_PATH_ERROR:
         return
             "The lookup path contained an invalid value (like a negative integer for an array index)";
-    case MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA:
+    case MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR:
         return
             "The lookup path does not match the data (key that doesn't exist, array index bigger than the array, expected array or map where none exists)";
     case MMDB_INVALID_NODE_NUMBER_ERROR:
         return
             "The MMDB_read_node function was called with a node number that does not exist in the search tree";
+    case MMDB_IPV6_LOOKUP_IN_IPV4_DATABASE_ERROR:
+        return
+            "You attempted to look up an IPv6 address in an IPv4-only database";
     default:
         return "Unknown error code";
     }

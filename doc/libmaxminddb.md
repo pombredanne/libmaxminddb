@@ -6,21 +6,54 @@ libmaxminddb - a library for working with MaxMind DB files
 
     #include <maxminddb.h>
 
-    int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb);
-    void MMDB_close(MMDB_s *mmdb);
+    int MMDB_open(
+        const char *const filename,
+        uint32_t flags,
+        MMDB_s *const mmdb);
+    void MMDB_close(MMDB_s *const mmdb);
 
-    MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *mmdb, const char *ipstr, int *gai_error, int *mmdb_error);
-    MMDB_lookup_result_s MMDB_lookup_sockaddr(MMDB_s *mmdb, struct sockaddr *sockaddr, int *mmdb_error);
-    
-    int MMDB_get_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, ...);
-    int MMDB_vget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, va_list path);
-    int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, char **path);
-    
-    int MMDB_get_entry_data_list(MMDB_entry_s *start, MMDB_entry_data_list_s **entry_data_list);
-    void MMDB_free_entry_data_list(MMDB_entry_data_list_s *entry_data_list);
-    int MMDB_get_metadata_as_entry_data_list(MMDB_s *mmdb, MMDB_entry_data_list_s **entry_data_list);
-    int MMDB_dump_entry_data_list(FILE *stream, MMDB_entry_data_list_s *entry_data_list, int indent);
-    
+    MMDB_lookup_result_s MMDB_lookup_string(
+        MMDB_s *const mmdb,
+        const char *const ipstr,
+        int *const gai_error,
+        int *const mmdb_error);
+    MMDB_lookup_result_s MMDB_lookup_sockaddr(
+        MMDB_s *const mmdb,
+        const struct sockaddr *const
+        sockaddr,
+        int *const mmdb_error);
+               
+    int MMDB_get_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        ...);
+    int int MMDB_vget_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        va_list va_path);
+    int MMDB_aget_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        const char *const *const path);
+
+    int MMDB_get_entry_data_list(
+        MMDB_entry_s *start,
+        MMDB_entry_data_list_s **const entry_data_list);
+    void MMDB_free_entry_data_list(
+        MMDB_entry_data_list_s *const entry_data_list);
+    int MMDB_get_metadata_as_entry_data_list(
+        MMDB_s *const mmdb,
+        MMDB_entry_data_list_s **const entry_data_list);
+    int MMDB_dump_entry_data_list(
+        FILE *const stream,
+        MMDB_entry_data_list_s *const entry_data_list,
+        int indent);
+
+    int MMDB_read_node(
+        MMDB_s *const mmdb,
+        uint32_t node_number,
+        MMDB_search_node_s *const node);
+
     const char *MMDB_lib_version(void);
     const char *MMDB_strerror(int error_code);
 
@@ -29,7 +62,6 @@ libmaxminddb - a library for working with MaxMind DB files
         MMDB_entry_s entry;
         uint16_t netmask;
     } MMDB_lookup_result_s;
-
 
     typedef struct MMDB_entry_data_s {
         bool has_data;
@@ -312,7 +344,7 @@ status codes are:
 * `MMDB_INVALID_LOOKUP_PATH_ERROR` - The lookup path passed to
   `MMDB_get_value`, `MMDB_vget_value`, or `MMDB_aget_value` contains an array
   offset that is not a non-negative integer.
-* `MMDB_LOOKUP_PATH_DOES_MATCH_DATA_ERROR` - The lookup path passed to
+* `MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR` - The lookup path passed to
   `MMDB_get_value`,`MMDB_vget_value`, or `MMDB_aget_value` does not match the
   data structure for the entry. There are number of reasons this can
   happen. The lookup path could include a key not in a map. The lookup path
@@ -321,7 +353,9 @@ status codes are:
 
 All status codes should be treated as `int` values.
 
-## `const char *MMDB_strerror(int error_code)`
+## `MMDB_strerror()`
+
+    const char *MMDB_strerror(int error_code)
 
 This function takes a status code and returns an English string explaining the
 status.
@@ -330,13 +364,19 @@ status.
 
 This library provides the following exported functions:
 
-## `int MMDB_open(const char *filename, uint32_t flags, MMDB_s *mmdb)`
+## `MMDB_open()`
+
+    int MMDB_open(
+        const char *const filename,
+        uint32_t flags,
+        MMDB_s *const mmdb);
 
 This function opens a handle to a MaxMind DB file. Its return value is a
 status code as defined above. Always check this call's return value.
 
     MMDB_s mmdb;
-    int status = MMDB_open("/path/to/file.mmdb", MMDB_MODE_MMAP, &mmdb);
+    int status =
+        MMDB_open("/path/to/file.mmdb", MMDB_MODE_MMAP, &mmdb);
     if (MMDB_SUCCESS != status) { ... }
     ...
     MMDB_close(&mmdb);
@@ -359,14 +399,22 @@ You can also pass `0` as the `flags` value in which case the database will be
 opened with the default flags. However, these defaults may change in future
 releases. The current default is `MMDB_MODE_MMAP`.
 
-## `void MMDB_close(MMDB_s *mmdb)`
+## `MMDB_close()`
+
+    void MMDB_close(MMDB_s *const mmdb);
 
 This frees any allocated or mmap'd memory that is held from the `MMDB_s`
 structure. *It does not free the memory allocated for the structure itself!*
 If you allocated the structure from the heap then you are responsible for
 freeing it.
 
-## `MMDB_lookup_result_s MMDB_lookup_string(MMDB_s *mmdb, const char *ipstr, int *gai_error, int *mmdb_error)`
+## `MMDB_lookup_string()`
+
+    MMDB_lookup_result_s MMDB_lookup_string(
+        MMDB_s *const mmdb,
+        const char *const ipstr,
+        int *const gai_error,
+        int *const mmdb_error);
 
 This function looks up an IP address that is passed in as a null-terminated
 string. Internally it calls `getaddrinfo()` to resolve the address into a
@@ -399,7 +447,13 @@ If you pass an IPv6 address to a database with only IPv4 data then the
 `found_entry` member will be false, but the `mmdb_error` status will still be
 `MMDB_SUCCESS`.
 
-## MMDB_lookup_result_s MMDB_lookup_sockaddr(MMDB_s *mmdb, struct sockaddr *sockaddr, int *mmdb_error)
+## `MMDB_lookup_sockaddr()`
+
+    MMDB_lookup_result_s MMDB_lookup_sockaddr(
+        MMDB_s *const mmdb,
+        const struct sockaddr *const
+        sockaddr,
+        int *const mmdb_error);
 
 This function looks up an IP address that has already been resolved by
 `getaddrinfo()`.
@@ -419,9 +473,18 @@ the `MMDB_lookup_string()` function.
 
 There are three functions for looking up data associated with an IP address.
 
-* `int MMDB_get_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, ...)`
-* `int MMDB_vget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, va_list path)`
-* `int MMDB_aget_value(MMDB_entry_s *start, MMDB_entry_data_s *entry_data, char **path)`
+    int MMDB_get_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        ...);
+    int int MMDB_vget_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        va_list va_path);
+    int MMDB_aget_value(
+        MMDB_entry_s *const start,
+        MMDB_entry_data_s *const entry_data,
+        const char *const *const path);
 
 The three functions allow three slightly different calling styles, but they
 all do the same thing.
@@ -451,7 +514,9 @@ We could look up the English name with this code:
     MMDB_lookup_result_s result =
         MMDB_lookup_sockaddr(mmdb, address->ai_addr, &mmdb_error);
     MMDB_entry_data_s entry_data;
-    int status = MMDB_get_value(&result.entry, &entry_data, "names", "en", NULL);
+    int status =
+        MMDB_get_value(&result.entry, &entry_data,
+                       "names", "en", NULL);
     if (MMDB_SUCCESS != status) { ... }
     if (entry_data.has_data) { ... }
 
@@ -473,7 +538,11 @@ path. The last member of this array must be `NULL`.
 If you want to get all of the entry data at once you can call
 `MMDB_get_entry_data_list()` instead.
 
-## `int MMDB_get_entry_data_list(MMDB_entry_s *start, MMDB_entry_data_list_s **entry_data_list)`
+## `MMDB_get_entry_data_list()`
+
+    int MMDB_get_entry_data_list(
+        MMDB_entry_s *start,
+        MMDB_entry_data_list_s **const entry_data_list);
 
 This function allows you to get all of the data for a complex data structure
 at once, rather than looking up each piece using repeated calls to
@@ -482,7 +551,8 @@ at once, rather than looking up each piece using repeated calls to
     MMDB_lookup_result_s result =
         MMDB_lookup_sockaddr(mmdb, address->ai_addr, &mmdb_error);
     MMDB_entry_data_list_s *entry_data_list, *first;
-    int status = MMDB_get_entry_data_list(&result.entry, &entry_data_list);
+    int status =
+        MMDB_get_entry_data_list(&result.entry, &entry_data_list);
     if (MMDB_SUCCESS != status) { ... }
     // save this so we can free this data later
     first = entry_data_list;
@@ -528,26 +598,39 @@ The returned list will consist of the following items:
 10. UTF8_STRING - array[0]
 11. UTF8_STRING - array[1]
 
-## `void MMDB_free_entry_data_list(MMDB_entry_data_list_s *entry_data_list)`
+## `MMDB_free_entry_data_list()`
+
+    void MMDB_free_entry_data_list(
+        MMDB_entry_data_list_s *const entry_data_list);
 
 The `MMDB_get_entry_data_list()` and `MMDB_get_metadata_as_entry_data_list()`
 functions will allocate the linked list structure from the heap. Call this
 function to free the `MMDB_entry_data_list_s` structure.
 
-## `int MMDB_get_metadata_as_entry_data_list(MMDB_s *mmdb, MMDB_entry_data_list_s **entry_data_list)`
+## `MMDB_get_metadata_as_entry_data_list()`
+
+    int MMDB_get_metadata_as_entry_data_list(
+        MMDB_s *const mmdb,
+        MMDB_entry_data_list_s **const entry_data_list);
 
 This function allows you to retrieve the database metadata as a linked list of
 `MMDB_entry_data_list_s` structures. This can be a more convenient way to deal
 with the metadata than using the metadata structure directly.
 
     MMDB_entry_data_list_s *entry_data_list, *first;
-    int status = MMDB_get_metadata_as_entry_data_list(mmdb, &entry_data_list);
+    int status =
+        MMDB_get_metadata_as_entry_data_list(mmdb, &entry_data_list);
     if (MMDB_SUCCESS != status) { ... }
     first = entry_data_list;
     ... // do something with the data
     MMDB_free_entry_data_list(first);
 
-## `int MMDB_dump_entry_data_list(FILE *stream, MMDB_entry_data_list_s *entry_data_list, int indent)`
+## `MMDB_dump_entry_data_list()`
+
+    int MMDB_dump_entry_data_list(
+        FILE *const stream,
+        MMDB_entry_data_list_s *const entry_data_list,
+        int indent);
 
 This function takes a linked list of `MMDB_entry_data_list_s` structures and
 stringifies it to the given `stream`. The `indent` parameter is the starting
@@ -566,7 +649,12 @@ The specific output format may change in future releases, so you should not
 rely on the specific formatting produced by this function. It is intended to be
 used to show data to users in a readable way and for debugging purposes.
 
-## `extern int MMDB_read_node(MMDB_s *mmdb, uint32_t node_number, MMDB_search_node_s *node)`
+## `MMDB_read_node()`
+
+    int MMDB_read_node(
+        MMDB_s *const mmdb,
+        uint32_t node_number,
+        MMDB_search_node_s *const node);
 
 This reads a specific node in the search tree. The third argument is a
 reference to an `MMDB_search_node_s` structure that will be populated by this
@@ -576,12 +664,13 @@ The return value is a status code. If you pass a `node_number` that is greater
 than the number of nodes in the database, this function will return
 `MMDB_INVALID_NODE_NUMBER_ERROR`, otherwise it will return `MMDB_SUCCESS`.
 
-## `const char *MMDB_lib_version(void)`
+## `MMDB_lib_version()`
 
+    const char *MMDB_lib_version(void)
+    
 This function returns the library version as a string, something like "2.0.0".
 
 # EXAMPLE
-
 
     #include <maxminddb.h>
 
@@ -591,7 +680,8 @@ This function returns the library version as a string, something like "2.0.0".
         int status = MMDB_open(fname, MMDB_MODE_MMAP, &mmdb);
 
         if (MMDB_SUCCESS != status) {
-            fprintf(stderr, "\n  Can't open %s - %s\n", fname, MMDB_strerror(status));
+            fprintf(stderr, "\n  Can't open %s - %s\n",
+                    fname, MMDB_strerror(status));
 
             if (MMDB_IO_ERROR == status) {
                 fprintf(stderr, "    IO error: %s\n", strerror(errno));
@@ -605,13 +695,14 @@ This function returns the library version as a string, something like "2.0.0".
 
         if (0 != gai_error) {
             fprintf(stderr,
-                    "\n  Error from call to getaddrinfo for %s - %s\n\n",
+                    "\n  Error from getaddrinfo for %s - %s\n\n",
                     ipstr, gai_strerror(gai_error));
             exit(2);
         }
 
         if (MMDB_SUCCESS != mmdb_error) {
-            fprintf(stderr, "\n  Got an error from the maxminddb library: %s\n\n",
+            fprintf(stderr,
+                    "\n  Got an error from libmaxminddb: %s\n\n",
                     MMDB_strerror(mmdb_error));
             exit(3);
         }
@@ -620,11 +711,14 @@ This function returns the library version as a string, something like "2.0.0".
 
         int exit_code = 0;
         if (result.found_entry) {
-            int status = MMDB_get_entry_data_list(&result.entry, &entry_data_list);
+            int status = MMDB_get_entry_data_list(&result.entry,
+                                                  &entry_data_list);
 
             if (MMDB_SUCCESS != status) {
-                fprintf(stderr, "Got an error looking up the entry data - %s\n",
-                        MMDB_strerror(status));
+                fprintf(
+                    stderr,
+                    "Got an error looking up the entry data - %s\n",
+                    MMDB_strerror(status));
                 exit_code = 4;
                 goto end;
             }
@@ -633,9 +727,10 @@ This function returns the library version as a string, something like "2.0.0".
                 MMDB_dump_entry_data_list(stdout, entry_data_list, 2);
             }
         } else {
-            fprintf(stderr,
-                    "\n  Could not find an entry for this IP address (%s)\n\n",
-                    ip_address);
+            fprintf(
+                stderr,
+                "\n  No entry for this IP address (%s) was found\n\n",
+                ip_address);
             exit_code = 5;
         }
 
@@ -645,6 +740,21 @@ This function returns the library version as a string, something like "2.0.0".
         exit(exit_code);
     }
 
+# INSTALLATION AND SOURCE
+
+You can download the latest release of libmaxminddb
+[from GitHub](https://github.com/maxmind/libmaxminddb/releases).
+
+[Our GitHub repo](https://github.com/maxmind/libmaxminddb) is publicly
+available. Please fork it!
+
+# BUG REPORTS AND PULL REQUESTS
+
+Please report all issues to
+[our GitHub issue tracker](https://github.com/maxmind/libmaxminddb/issues). We
+welcome bug reports and pull requests. Please note that pull requests are
+greatly preferred over patches.
+
 # AUTHORS
 
 This library was written by Boris Zentner (bzentner@maxmind.com) and Dave
@@ -652,18 +762,16 @@ Rolsky (drolsky@maxmind.com).
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2013 by MaxMind, Inc.
+Copyright 2013-2014 MaxMind, Inc.
 
-This library is free software; you can redistribute it and/or modify it under
-the terms of the GNU Lesser General Public License as published by the Free
-Software Foundation; either version 2.1 of the License, or (at your option)
-any later version.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-This library is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License for more
-details.
+    http://www.apache.org/licenses/LICENSE-2.0
 
-You should have received a copy of the GNU Lesser General Public License along
-with this library; if not, write to the Free Software Foundation, Inc., 51
-Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

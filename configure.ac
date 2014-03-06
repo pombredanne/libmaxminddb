@@ -1,8 +1,8 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.65])
-AC_INIT([libmaxminddb], [0.5.0], [support@maxmind.com])
+AC_PREREQ([2.63])
+AC_INIT([libmaxminddb], [0.5.4], [support@maxmind.com])
 AC_CONFIG_SRCDIR([include/maxminddb.h])
 AC_CONFIG_HEADERS([config.h include/maxminddb_config.h])
 
@@ -52,18 +52,26 @@ CC=`echo ${CC} | sed 's/-std=gnu99/-std=c99/'`
 
 AC_C_RESTRICT
 
-# Checks for libraries.
+AC_CHECK_HEADERS([arpa/inet.h assert.h fcntl.h inttypes.h libgen.h math.h netdb.h netinet/in.h stdarg.h stdbool.h stdint.h stdio.h stdlib.h string.h sys/mman.h sys/socket.h sys/stat.h sys/time.h sys/types.h unistd.h])
 
-# Checks for header files.
-AC_CHECK_HEADERS([arpa/inet.h fcntl.h netdb.h netinet/in.h string.h sys/time.h unistd.h stdlib.h stdint.h])
+# configure generates an invalid config for MinGW because of the type checks
+# so we only run them on non MinGW-Systems. For MinGW we also need to link
+# against ws2_32.
+AC_CANONICAL_HOST
+case $host_os in
+        mingw*)
+                LDFLAGS="-lws2_32"
+        ;;
+        *)
+                AC_TYPE_OFF_T
+                AC_TYPE_SIZE_T
+                AC_TYPE_SSIZE_T
+                AC_TYPE_UINT8_T
+                AC_TYPE_UINT32_T
+                AC_TYPE_UINT64_T
+        ;;
+esac
 
-# Checks for typedefs, structures, and compiler characteristics.
-AC_TYPE_OFF_T
-AC_TYPE_SIZE_T
-AC_TYPE_SSIZE_T
-AC_TYPE_UINT8_T
-AC_TYPE_UINT32_T
-AC_TYPE_UINT64_T
 
 # This check is backwards in order to make life easier for people writing
 # extensions in other languages that link to this library. If they want to
@@ -85,11 +93,8 @@ AC_CHECK_FUNC(
         [open_memstream],
         [AC_DEFINE([HAVE_OPEN_MEMSTREAM], [1], [Has an open_memstream() function])])
 
-# Checks for library functions.
-
 AC_FUNC_MALLOC
 AC_FUNC_MMAP
-AC_CHECK_FUNCS([memmem])
 
 AC_SEARCH_LIBS([fabs], [m])
 AC_SEARCH_LIBS([fabsf], [m])
